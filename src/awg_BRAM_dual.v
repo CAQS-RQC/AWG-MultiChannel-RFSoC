@@ -20,8 +20,16 @@ module awg_BRAM_dual
     output                       m00_axis_tvalid,
     input                        m22_axis_aclk,
     output [DAC_DATA_WIDTH-1:0]  m22_axis_tdata,
-    output                       m22_axis_tvalid
+    output                       m22_axis_tvalid,
+    // added for the ADC scope: toggle at every sequence start (read counter wrap)
+    output                       seq_tog0,   // ch0, m00_axis_aclk domain
+    output                       seq_tog2    // ch2, m22_axis_aclk domain
     );
+
+    reg seq_tog0_r = 1'b0;
+    reg seq_tog2_r = 1'b0;
+    assign seq_tog0 = seq_tog0_r;
+    assign seq_tog2 = seq_tog2_r;
     
     reg [RAM_ADDR_WIDTH-1:0] raddr0;
     reg [RAM_ADDR_WIDTH-1:0] raddr1;
@@ -181,6 +189,7 @@ module awg_BRAM_dual
         begin
             raddr0_pipe <= 0;
             raddr1_pipe <= 0;
+            seq_tog0_r  <= ~seq_tog0_r;
         end
         if (control_trigger)
         begin
@@ -209,6 +218,7 @@ module awg_BRAM_dual
         begin
             raddr2_pipe <= 0;
             raddr3_pipe <= 0;
+            seq_tog2_r  <= ~seq_tog2_r;
         end
         if (control_trigger)
         begin
