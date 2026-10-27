@@ -13,23 +13,24 @@
 #       set AWG_BUILD 0 ; source .../fpga/awg_multichannel_rfsoc.tcl      ;# stop before synthesis
 #
 #   Command line (batch):
-#       vivado -mode batch -source fpga/awg_multichannel_rfsoc.tcl -tclargs [--no-adc] [--proj-dir DIR] [--no-build] [--jobs N]
+#       vivado -mode batch -source fpga/awg_multichannel_rfsoc.tcl -tclargs [--no-adc] [--adc-mode iq|full] [--proj-dir DIR] [--no-build] [--jobs N]
 #
 # Options                    variable      default
 #   --no-adc    (AWG only)   AWG_ADC 0     ADC capture ON
+#   --adc-mode iq|full       AWG_ADC_MODE  iq   (iq: 2.4576 GSps @ 307.2 MHz, as in the old awg_adc.bit; full: 4.9152 GSps @ 614.4 MHz)
 #   --no-build  (stop after the block design + wrapper are made)   AWG_BUILD 0   build ON
 #   --jobs N                 AWG_JOBS N    4
 #
 # Result: fpga/awg_multichannel_rfsoc/   (git-ignored Vivado project)
-#         fpga/bitstreams/awg_adc_v3.bit + .hwh   (or awg_only_new.* with --no-adc)
+#         fpga/bitstreams/awg_adc_v3.bit + .hwh   (awg_adc_full_v3.* for --adc-mode full, awg_only_new.* with --no-adc)
 #         A full build takes roughly 50 minutes.
 # =============================================================================
 
 set awg_fpga_dir [file dirname [file normalize [info script]]]
 
 # ------------------------------------------------------------ options
-array set awg_opt {adc 1 build 1 jobs 4 projdir {}}
-foreach {awg_var awg_key} {AWG_ADC adc AWG_BUILD build AWG_JOBS jobs AWG_PROJ_DIR projdir} {
+array set awg_opt {adc 1 adcmode iq build 1 jobs 4 projdir {}}
+foreach {awg_var awg_key} {AWG_ADC adc AWG_ADC_MODE adcmode AWG_BUILD build AWG_JOBS jobs AWG_PROJ_DIR projdir} {
     if {[info exists ::$awg_var]} { set awg_opt($awg_key) [set ::$awg_var] }
 }
 if {[info exists ::argv]} {
@@ -38,6 +39,7 @@ if {[info exists ::argv]} {
         switch -exact -- [lindex $awg_args $awg_i] {
             --no-adc   { set awg_opt(adc) 0 }
             --adc      { set awg_opt(adc) 1 }
+            --adc-mode { incr awg_i ; set awg_opt(adcmode) [lindex $awg_args $awg_i] }
             --proj-dir { incr awg_i ; set awg_opt(projdir) [lindex $awg_args $awg_i] }
             --no-build { set awg_opt(build) 0 }
             --jobs     { incr awg_i ; set awg_opt(jobs) [lindex $awg_args $awg_i] }
@@ -46,9 +48,10 @@ if {[info exists ::argv]} {
     }
 }
 proc awg_info {msg} { puts "AWG-BUILD: $msg" }
-awg_info "adc=$awg_opt(adc) build=$awg_opt(build) jobs=$awg_opt(jobs)  (dir: $awg_fpga_dir)"
+awg_info "adc=$awg_opt(adc) mode=$awg_opt(adcmode) build=$awg_opt(build) jobs=$awg_opt(jobs)  (dir: $awg_fpga_dir)"
 
 # ------------------------------------------------------------ checks (nothing is changed before these pass)
+if {$awg_opt(adcmode) ni {iq full}} { error "--adc-mode must be iq or full, got '$awg_opt(adcmode)'" }
 if {![string match 2024.1* [version -short]]} {
     error "This design needs Vivado 2024.1, found [version -short]. (The block design export is 2024.1; other versions change IP versions and the build fails.)"
 }
@@ -106,6 +109,7 @@ if {[catch {current_bd_design $awg_bd}] || [llength [get_bd_cells -quiet usp_rf_
 # ------------------------------------------------------------ ADC capture
 if {$awg_opt(adc)} {
     awg_info "adding the ADC capture path"
+    set ::ADC_MODE $awg_opt(adcmode)
     set ::DO_BUILD 0           ;# this script does the build, after the wrapper exists
     source $awg_adc_tcl
     current_bd_design $awg_bd
@@ -150,7 +154,7 @@ if {($awg_wns ne "" && $awg_wns < 0) || ($awg_whs ne "" && $awg_whs < 0)} {
 }
 
 # ------------------------------------------------------------ copy bit + hwh next to the others
-set awg_name [expr {$awg_opt(adc) ? "awg_adc_v3" : "awg_only_new"}]
+set awg_name [expr {!$awg_opt(adc) ? "awg_only_new" : ($awg_opt(adcmode) eq "full" ? "awg_adc_full_v3" : "awg_adc_v3")}]
 set awg_out  [file join $awg_fpga_dir bitstreams]
 file mkdir $awg_out
 set awg_bit [file join $awg_run_dir ${awg_bd}_wrapper.bit]

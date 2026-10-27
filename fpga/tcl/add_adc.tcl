@@ -2,7 +2,7 @@
 #
 # Replaces the v2 DMA capture (packet_generator / clock converter / FIFO / axi_dma) by:
 #
-#   RFDC m00_axis (ADC_A, 2.4576 GSps, 8 samples/beat @ 307.2 MHz)
+#   RFDC m00_axis (slice 00 = vin0_01; 8 samples/beat; ADC_MODE iq: 2.4576 GSps @ 307.2 MHz, full: 4.9152 GSps @ 614.4 MHz)
 #        |
 #   adc      (adc/hdl/adc_core.v : trigger engine + AXI-Lite registers)
 #        | BRAM port A, ADC clock (never back-pressures the ADC, never loses a sample)
@@ -14,6 +14,7 @@
 # Trigger sources: immediate, ADC level rising/falling (sample accurate), AWG ch0/ch2 sequence
 # start (new seq_tog0/seq_tog2 outputs of awg_BRAM_dual), control_trigger edges, manual.
 #
+# Set ADC_MODE (iq | full, default iq) before sourcing to choose the converter setup.
 # Normally you do NOT run this by hand: fpga/awg_multichannel_rfsoc.tcl sources it (with DO_BUILD 0).
 # Manual use (Vivado 2024.1, AWG block design open):
 #   source <repo>/fpga/tcl/add_adc.tcl
@@ -76,18 +77,10 @@ foreach c [list $rfdc_name zynq_ultra_ps_e_0 ps8_0_axi_periph rst_ps8_0_99M axi_
 if {![file exists $core_file]} { die "missing $core_file" }
 
 # ------------------------------------------------------------ STEP 1: RFDC ADC config (same as v2)
+if {![info exists ADC_MODE]} { set ADC_MODE iq }
+if {$ADC_MODE ni {iq full}} { die "ADC_MODE must be iq or full (got $ADC_MODE)" }
+
 set rfdc [get_bd_cells $rfdc_name]
-array set want [list \
-    CONFIG.ADC_Slice${S}_Enable     true \
-    CONFIG.ADC${t}_Sampling_Rate    4.9152 \
-    CONFIG.ADC${t}_PLL_Enable       true \
-    CONFIG.ADC${t}_Refclk_Freq      491.520 \
-    CONFIG.ADC${t}_Outclk_Freq      307.200 \
-    CONFIG.ADC_Data_Type${S}        1 \
-    CONFIG.ADC_Data_Width${S}       8 \
-    CONFIG.ADC_Decimation_Mode${S}  2 \
-    CONFIG.ADC_Mixer_Type${S}       2 \
-    CONFIG.ADC_Mixer_Mode${S}       0 ]
 proc cfg_ok {rfdc wantv} {
     array set want $wantv
     set bad {}
@@ -99,18 +92,50 @@ proc cfg_ok {rfdc wantv} {
     }
     return $bad
 }
-set bad [cfg_ok $rfdc [array get want]]
-if {[llength $bad]} {
-    say "INFO: ADC not configured yet, applying: $bad"
-    set cfg {}
-    foreach k [array names want] { lappend cfg $k $want($k) }
-    if {[catch {set_property -dict $cfg $rfdc} err]} { die "RFDC rejected ADC settings: $err" }
-    set bad [cfg_ok $rfdc [array get want]]
-    if {[llength $bad]} { die "ADC readback mismatch: $bad" }
+# ADC_MODE iq   : 4.9152 GSps, I/Q output, decimation 2 -> 2.4576 GSps, 8 samples/beat @ 307.2 MHz (I stream only)
+# ADC_MODE full : 4.9152 GSps, real output, no decimation, 8 samples/beat @ 614.4 MHz
+set common [list \
+    CONFIG.ADC_Slice${S}_Enable  true \
+    CONFIG.ADC${t}_Sampling_Rate 4.9152 \
+    CONFIG.ADC${t}_PLL_Enable    true \
+    CONFIG.ADC${t}_Refclk_Freq   491.520 \
+    CONFIG.ADC_Data_Width${S}    8]
+if {$ADC_MODE eq "iq"} {
+    set want_clk_mhz 307.2
+    set mode_text "I/Q, decimation 2 -> 2.4576 GSps"
+    set candidates [list [concat $common [list \
+        CONFIG.ADC${t}_Outclk_Freq 307.200 CONFIG.ADC_Data_Type${S} 1 CONFIG.ADC_Decimation_Mode${S} 2 \
+        CONFIG.ADC_Mixer_Type${S} 2 CONFIG.ADC_Mixer_Mode${S} 0]]]
+} else {
+    set want_clk_mhz 614.4
+    set mode_text "real, no decimation -> 4.9152 GSps"
+    # The decimation value that means 'off' differs between IP versions, so two spellings are tried.
+    set candidates [list \
+        [concat $common [list CONFIG.ADC${t}_Outclk_Freq 614.400 CONFIG.ADC_Data_Type${S} 0 \
+            CONFIG.ADC_Decimation_Mode${S} 0 CONFIG.ADC_Mixer_Type${S} 3]] \
+        [concat $common [list CONFIG.ADC${t}_Outclk_Freq 614.400 CONFIG.ADC_Data_Type${S} 0 \
+            CONFIG.ADC_Decimation_Mode${S} 1 CONFIG.ADC_Mixer_Type${S} 3]]]
 }
-set nb [get_property CONFIG.TDATA_NUM_BYTES [get_bd_intf_pins $rfdc_name/m${S}_axis]]
-if {$nb != 16} { die "m${S}_axis is $nb bytes, expected 16" }
-say "INFO: ADC_A config ok (4.9152 GSps, I/Q dec 2 -> 2.4576 GSps, 8 samples/beat, clk_adc0 [expr {[get_property CONFIG.FREQ_HZ [pin $rfdc_name/clk_adc0]]/1e6}] MHz)"
+set applied 0
+set last_err ""
+foreach cand $candidates {
+    if {[llength [cfg_ok $rfdc $cand]]} {
+        # set_property -dict is all-or-nothing: if any value is rejected the previous config is restored
+        if {[catch {set_property -dict $cand $rfdc} err]} {
+            set last_err $err
+            say "INFO: RFDC rejected candidate: $err"
+            continue
+        }
+    }
+    set bad [cfg_ok $rfdc $cand]
+    set nb  [get_property CONFIG.TDATA_NUM_BYTES [get_bd_intf_pins $rfdc_name/m${S}_axis]]
+    set fmhz [expr {[get_property CONFIG.FREQ_HZ [pin $rfdc_name/clk_adc${t}]]/1e6}]
+    if {[llength $bad] == 0 && $nb == 16 && abs($fmhz - $want_clk_mhz) < 0.01} { set applied 1 ; break }
+    set last_err "readback: $bad  m${S}_axis bytes=$nb  clk_adc${t}=${fmhz} MHz"
+    say "INFO: candidate not usable: $last_err"
+}
+if {!$applied} { die "RFDC ADC config for ADC_MODE=$ADC_MODE failed: $last_err" }
+say "INFO: ADC config ok, mode $ADC_MODE ($mode_text, 8 samples/beat, clk_adc${t} ${want_clk_mhz} MHz)"
 
 # ------------------------------------------------------------ STEP 2: remove v2 / previous v3 cells
 say "STEP 2: cleanup"
