@@ -1,6 +1,6 @@
 `timescale 1ns / 1ps
 // ============================================================================
-// adc_scope_core.v  -  triggered capture engine for one RFDC ADC stream
+// adc_core.v  -  triggered capture engine for one RFDC ADC stream
 //
 //  * Input : RFDC ADC AXI-Stream, 8 x int16 samples per beat (128 bit), sample 0 in bits [15:0].
 //            With the AWG overlay config (4.9152 GSps, I/Q, decimation 2, mixer 0 Hz) this is
@@ -35,7 +35,7 @@
 //   0x28 ID      R  0xADC5_0003
 //   0x2C ALIVE   R  free-running count of valid ADC beats (shows the ADC is streaming)
 // ============================================================================
-module adc_scope_core #(
+module adc_core #(
     parameter DEPTH_LOG2 = 14            // 16384 beats = 131072 samples = 53.3 us at 2.4576 GSps
                                          // keep BRAM_PORTA MEM_SIZE below = 16 * 2**DEPTH_LOG2
 )(

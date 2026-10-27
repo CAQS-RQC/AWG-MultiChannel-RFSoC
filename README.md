@@ -65,14 +65,14 @@ The design contains AXI GPIOs that Python (`python/rfsoc_awg.py`) drives as soft
 
 
 ## Repository layout
-- `fpga/` — RTL (`src/`), constraints, block-design Tcl, the `packet_generator` IP, and `awg_multichannel_rfsoc.tcl`.
+- `fpga/` — RTL (`src/` AWG, `adc/` ADC capture), constraints, block-design Tcl, `awg_multichannel_rfsoc.tcl` (the single build script), `bitstreams/`, and `legacy/` (unused older attempts).
 - `fpga/bitstreams/` — `awg_adc.bit` with its `.hwh`, and `awg_clock_syncd.7z` with its `.hwh`. Extract the archive to get `awg_clock_syncd.bit`.
 - `python/` — current dashboard (`rfsoc_dashboard.py`, `AWG_dashboard.ipynb`) and the modules it imports (`rfsoc_awg.py`, `adc_scope.py`, `bode_sweep.py`, `bode.ipynb`), plus the LMK and LMX register files. `xrfclk.set_ref_clks` looks for those register files in the working directory.
 - `python/dac_adc/` — earlier DAC+ADC scripts, including their own `rfsoc_awg.py`. `AWG_notebook.ipynb` in that folder loads `awg_adc.bit`.
 - `python/awg_only/` — original AWG-only scripts. `AWG_notebook.ipynb` in that folder loads `awg_clock_syncd.bit`.
 - `assets/` — architecture diagrams.
 
-`fpga/bd/block_design.tcl` is the block design the build script sources (Vivado 2022.2, `zynq_ultra_ps_e:3.4`). `block_design2024ForceAccept.tcl` is a Vivado 2024.1 re-export and is not sourced by the build. `design_1.tcl` is an older, smaller export and is not sourced either. The build adds `fpga/constrs/constrs.xdc`. `awg_top.xdc` and `adc_capture.xdc` are separate; add `adc_capture.xdc` after running `fpga/tcl/add_adc_capture.tcl`. That script needs `fpga/ip/packet_generator_1.0`.
+`fpga/awg_multichannel_rfsoc.tcl` is the single build script (see Modifications). It sources `fpga/bd/block_design.tcl` (Vivado 2024.1 export of the AWG block design), optionally adds the ADC capture path with `fpga/tcl/add_adc.tcl` (RTL in `fpga/adc/hdl/adc_core.v`), and uses `fpga/constrs/awg_top.xdc`. `fpga/legacy/` holds the earlier DMA-based ADC capture attempt (`add_adc_capture.tcl`, `adc_capture.xdc`, `packet_generator_1.0`), older block-design exports and the original constraints. Nothing in it is used by the build.
 
 ## Usage
 1. On the board, put in one folder: the notebook you want from `python/`, `python/dac_adc/`, or `python/awg_only/`; `python/LMK04828_245.76.txt` and `python/LMX2594_491.52.txt`; and the matching `.bit` and `.hwh` from `fpga/bitstreams/`. For the original design, extract `awg_clock_syncd.7z` to obtain the `.bit`.
@@ -81,6 +81,14 @@ The design contains AXI GPIOs that Python (`python/rfsoc_awg.py`) drives as soft
 
 
 ## Modifications
-The project can be built as a Vivado project using `fpga/awg_multichannel_rfsoc.tcl`.
+Requires Vivado 2024.1. One script builds everything (project, block design, ADC capture, bitstream, ~50 min) and copies `awg_adc_v3.bit/.hwh` into `fpga/bitstreams/`:
+
+```
+# Vivado Tcl console
+source <repo>/fpga/awg_multichannel_rfsoc.tcl
+# or batch
+vivado -mode batch -source fpga/awg_multichannel_rfsoc.tcl -tclargs [--no-adc] [--no-build] [--jobs N] [--proj-dir DIR]
+```
+`--no-adc` builds the AWG only, `--no-build` stops after the block design and wrapper are made, `--proj-dir` puts the Vivado project in another (shorter) folder if Windows paths get too long. In the console, set `AWG_ADC`, `AWG_BUILD`, `AWG_JOBS` or `AWG_PROJ_DIR` before sourcing instead.
 The board file can be installed from
 https://github.com/RealDigitalOrg/RFSoC4x2-BSP

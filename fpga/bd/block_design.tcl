@@ -20,16 +20,14 @@ set script_folder [_tcl::get_script_folder]
 ################################################################
 # Check if script is running in correct Vivado version.
 ################################################################
-set scripts_vivado_version 2022.2
+set scripts_vivado_version 2024.1
 set current_vivado_version [version -short]
 
 if { [string first $scripts_vivado_version $current_vivado_version] == -1 } {
    puts ""
-   if { [string compare $scripts_vivado_version $current_vivado_version] > 0 } {
-      catch {common::send_gid_msg -ssname BD::TCL -id 2042 -severity "ERROR" "This script was generated using Vivado <$scripts_vivado_version> and is being run in <$current_vivado_version> of Vivado. Sourcing the script failed since it was created with a future version of Vivado."}
-      return 1
-   }
-   catch {common::send_gid_msg -ssname BD::TCL -id 2041 -severity "WARNING" "This script was generated using Vivado <$scripts_vivado_version> and is being run in <$current_vivado_version>. Continuing so the block design can be created and its IP upgraded."}
+   catch {common::send_gid_msg -ssname BD::TCL -id 2041 -severity "ERROR" "This script was generated using Vivado <$scripts_vivado_version> and is being run in <$current_vivado_version> of Vivado. Please run the script in Vivado <$scripts_vivado_version> then open the design in Vivado <$current_vivado_version>. Upgrade the design by running \"Tools => Report => Report IP Status...\", then run write_bd_tcl to create an updated script."}
+
+   return 1
 }
 
 ################################################################
@@ -45,6 +43,9 @@ if { [string first $scripts_vivado_version $current_vivado_version] == -1 } {
 # awg_BRAM_dual, control_or_gate, pmod_test
 
 # Please add the sources of those modules before sourcing this Tcl script.
+set _src_dir [file normalize [file join [file dirname [info script]] .. src]]
+add_files [glob [file join $_src_dir *.{v,sv,vhd}]]
+update_compile_order -fileset sources_1
 
 # If there is no project opened, this script will create a
 # project, but make sure you do not have an existing project
@@ -118,7 +119,7 @@ xilinx.com:ip:axis_data_fifo:2.0\
 xilinx.com:ip:proc_sys_reset:5.0\
 xilinx.com:ip:usp_rf_data_converter:2.6\
 xilinx.com:ip:util_ds_buf:2.2\
-xilinx.com:ip:zynq_ultra_ps_e:3.4\
+xilinx.com:ip:zynq_ultra_ps_e:3.5\
 "
 
    set list_ips_missing ""
@@ -415,7 +416,7 @@ proc create_root_design { parentCell } {
 
 
   # Create instance: zynq_ultra_ps_e_0, and set properties
-  set zynq_ultra_ps_e_0 [ create_bd_cell -type ip -vlnv xilinx.com:ip:zynq_ultra_ps_e:3.4 zynq_ultra_ps_e_0 ]
+  set zynq_ultra_ps_e_0 [ create_bd_cell -type ip -vlnv xilinx.com:ip:zynq_ultra_ps_e:3.5 zynq_ultra_ps_e_0 ]
   set_property -dict [list \
     CONFIG.CAN0_BOARD_INTERFACE {custom} \
     CONFIG.CAN1_BOARD_INTERFACE {custom} \

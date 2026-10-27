@@ -1,33 +1,33 @@
-# add_adc_scope.tcl  (v3)  -  triggered ADC scope for the AWG block design
+# add_adc.tcl  (v3)  -  triggered ADC capture for the AWG block design
 #
 # Replaces the v2 DMA capture (packet_generator / clock converter / FIFO / axi_dma) by:
 #
 #   RFDC m00_axis (ADC_A, 2.4576 GSps, 8 samples/beat @ 307.2 MHz)
 #        |
-#   adc_scope      (scope/hdl/adc_scope_core.v : trigger engine + AXI-Lite registers)
+#   adc      (adc/hdl/adc_core.v : trigger engine + AXI-Lite registers)
 #        | BRAM port A, ADC clock (never back-pressures the ADC, never loses a sample)
-#   blk_mem_scope  (true dual-port BRAM, 16384 x 128 bit = 131072 samples = 53 us)
+#   blk_mem_adc  (true dual-port BRAM, 16384 x 128 bit = 131072 samples = 53 us)
 #        | BRAM port B, PS clock
-#   axi_bram_ctrl_scope  <- ps8_0_axi_periph/M08   (PS reads the samples)
-#   adc_scope/s_axi      <- ps8_0_axi_periph/M09   (PS reads/writes the registers)
+#   axi_bram_ctrl_adc  <- ps8_0_axi_periph/M08   (PS reads the samples)
+#   adc/s_axi      <- ps8_0_axi_periph/M09   (PS reads/writes the registers)
 #
 # Trigger sources: immediate, ADC level rising/falling (sample accurate), AWG ch0/ch2 sequence
 # start (new seq_tog0/seq_tog2 outputs of awg_BRAM_dual), control_trigger edges, manual.
 #
 # Normally you do NOT run this by hand: fpga/awg_multichannel_rfsoc.tcl sources it (with DO_BUILD 0).
 # Manual use (Vivado 2024.1, AWG block design open):
-#   source <repo>/fpga/tcl/add_adc_scope2.tcl
+#   source <repo>/fpga/tcl/add_adc.tcl
 # It can be run again: it removes what v2/v3 added before building.
-# Log: fpga/tcl/add_adc_scope.log
+# Log: fpga/tcl/add_adc.log
 
 if {![info exists DO_BUILD]} { set DO_BUILD 1 }   ;# 1 = after a clean validation, regenerate and launch synth+impl+bitstream (the master script sets 0)
-set DEPTH_LOG2 14         ;# must match DEPTH_LOG2 / MEM_SIZE in adc_scope_core.v (16 << 14 = 256 KiB)
+set DEPTH_LOG2 14         ;# must match DEPTH_LOG2 / MEM_SIZE in adc_core.v (16 << 14 = 256 KiB)
 set MEM_BYTES  [expr {16 << $DEPTH_LOG2}]
 
 set script_dir [file dirname [file normalize [info script]]]
 set repo_dir   [file normalize [file join $script_dir ..]]
-set core_file  [file join $repo_dir scope hdl adc_scope_core.v]
-set logf [open [file join $script_dir add_adc_scope.log] w]
+set core_file  [file join $repo_dir adc hdl adc_core.v]
+set logf [open [file join $script_dir add_adc.log] w]
 proc say {msg} { global logf; puts $msg; puts $logf $msg; flush $logf }
 proc die {msg} { global logf; say "ERROR: $msg"; close $logf; error $msg }
 
@@ -114,8 +114,9 @@ say "INFO: ADC_A config ok (4.9152 GSps, I/Q dec 2 -> 2.4576 GSps, 8 samples/bea
 
 # ------------------------------------------------------------ STEP 2: remove v2 / previous v3 cells
 say "STEP 2: cleanup"
+# (old pre-rename cell names are listed too, so a re-run cleans up older builds)
 foreach c {packet_generator_adc axis_clock_converter_adc axis_fifo_adc axi_dma_adc proc_sys_reset_adc \
-           adc_scope blk_mem_scope axi_bram_ctrl_scope} {
+           adc_scope blk_mem_scope axi_bram_ctrl_scope adc blk_mem_adc axi_bram_ctrl_adc} {
     set x [get_bd_cells -quiet $c]
     if {[llength $x]} { say "  delete $c"; delete_bd_objs $x }
 }
@@ -179,13 +180,13 @@ if {[llength [get_bd_intf_nets -quiet -of_objects [get_bd_intf_pins $rfdc_name/v
 }
 
 # ------------------------------------------------------------ STEP 5: cells
-say "STEP 5: scope cells"
+say "STEP 5: ADC capture cells"
 create_bd_cell -type ip -vlnv xilinx.com:ip:proc_sys_reset:5.0 proc_sys_reset_adc
-set scope [create_bd_cell -type module -reference adc_scope_core adc_scope]
-set_property CONFIG.DEPTH_LOG2 $DEPTH_LOG2 $scope
-set bctl [create_bd_cell -type ip -vlnv xilinx.com:ip:axi_bram_ctrl:4.1 axi_bram_ctrl_scope]
+set adc_cell [create_bd_cell -type module -reference adc_core adc]
+set_property CONFIG.DEPTH_LOG2 $DEPTH_LOG2 $adc_cell
+set bctl [create_bd_cell -type ip -vlnv xilinx.com:ip:axi_bram_ctrl:4.1 axi_bram_ctrl_adc]
 set_property -dict [list CONFIG.DATA_WIDTH 128 CONFIG.SINGLE_PORT_BRAM 1 CONFIG.ECC_TYPE 0] $bctl
-set bmg [create_bd_cell -type ip -vlnv xilinx.com:ip:blk_mem_gen:8.4 blk_mem_scope]
+set bmg [create_bd_cell -type ip -vlnv xilinx.com:ip:blk_mem_gen:8.4 blk_mem_adc]
 if {[catch {set_property -dict [list CONFIG.use_bram_block BRAM_Controller CONFIG.Memory_Type True_Dual_Port_RAM] $bmg} err]} {
     say "  note: blk_mem_gen dict: $err"
     set_property CONFIG.Memory_Type True_Dual_Port_RAM $bmg
@@ -193,37 +194,37 @@ if {[catch {set_property -dict [list CONFIG.use_bram_block BRAM_Controller CONFI
 
 # ------------------------------------------------------------ STEP 6: connections
 say "STEP 6: connections"
-ihook $rfdc_name/m${S}_axis             adc_scope/s_axis
-ihook adc_scope/BRAM_PORTA              blk_mem_scope/BRAM_PORTA
-ihook axi_bram_ctrl_scope/BRAM_PORTA    blk_mem_scope/BRAM_PORTB
-ihook ps8_0_axi_periph/M08_AXI          axi_bram_ctrl_scope/S_AXI
-ihook ps8_0_axi_periph/M09_AXI          adc_scope/s_axi
+ihook $rfdc_name/m${S}_axis             adc/s_axis
+ihook adc/BRAM_PORTA              blk_mem_adc/BRAM_PORTA
+ihook axi_bram_ctrl_adc/BRAM_PORTA    blk_mem_adc/BRAM_PORTB
+ihook ps8_0_axi_periph/M08_AXI          axi_bram_ctrl_adc/S_AXI
+ihook ps8_0_axi_periph/M09_AXI          adc/s_axi
 
 hook zynq_ultra_ps_e_0/pl_clk0  ps8_0_axi_periph/M08_ACLK ps8_0_axi_periph/M09_ACLK \
-                                axi_bram_ctrl_scope/s_axi_aclk adc_scope/s_axi_aclk
+                                axi_bram_ctrl_adc/s_axi_aclk adc/s_axi_aclk
 hook rst_ps8_0_99M/peripheral_aresetn  ps8_0_axi_periph/M08_ARESETN ps8_0_axi_periph/M09_ARESETN \
-                                axi_bram_ctrl_scope/s_axi_aresetn adc_scope/s_axi_aresetn
-hook $rfdc_name/clk_adc${t}     $rfdc_name/m${t}_axis_aclk adc_scope/adc_clk proc_sys_reset_adc/slowest_sync_clk
+                                axi_bram_ctrl_adc/s_axi_aresetn adc/s_axi_aresetn
+hook $rfdc_name/clk_adc${t}     $rfdc_name/m${t}_axis_aclk adc/adc_clk proc_sys_reset_adc/slowest_sync_clk
 hook zynq_ultra_ps_e_0/pl_resetn0  proc_sys_reset_adc/ext_reset_in
-hook proc_sys_reset_adc/peripheral_aresetn  $rfdc_name/m${t}_axis_aresetn adc_scope/adc_aresetn
-hook awg_BRAM_dual_0/seq_tog0   adc_scope/awg_seq0_tog
-hook awg_BRAM_dual_0/seq_tog2   adc_scope/awg_seq2_tog
-hook control_or_gate_0/control_trigger  adc_scope/ctrl_trig
+hook proc_sys_reset_adc/peripheral_aresetn  $rfdc_name/m${t}_axis_aresetn adc/adc_aresetn
+hook awg_BRAM_dual_0/seq_tog0   adc/awg_seq0_tog
+hook awg_BRAM_dual_0/seq_tog2   adc/awg_seq2_tog
+hook control_or_gate_0/control_trigger  adc/ctrl_trig
 
 # ------------------------------------------------------------ STEP 7: addresses, validate, save
 say "STEP 7: addresses / validate / save"
 set space [get_bd_addr_spaces zynq_ultra_ps_e_0/Data]
-set mseg  [get_bd_addr_segs axi_bram_ctrl_scope/S_AXI/Mem0]
+set mseg  [get_bd_addr_segs axi_bram_ctrl_adc/S_AXI/Mem0]
 if {[catch {assign_bd_address -target_address_space $space -range $MEM_BYTES $mseg} err]} {
     say "  note: assign with range: $err"
     assign_bd_address -target_address_space $space $mseg
     foreach s [get_bd_addr_segs -quiet -of_objects $space] {
-        if {[string match "*axi_bram_ctrl_scope*" $s]} { set_property range $MEM_BYTES $s }
+        if {[string match "*axi_bram_ctrl_adc*" $s]} { set_property range $MEM_BYTES $s }
     }
 }
 assign_bd_address
 foreach s [get_bd_addr_segs -quiet -of_objects $space] {
-    if {[string match "*scope*" $s]} {
+    if {[string match "*adc*" $s]} {
         say [format "  %-50s offset %s range %s" $s [get_property offset $s] [get_property range $s]]
     }
 }
@@ -248,6 +249,6 @@ if {$DO_BUILD} {
     say "Done. When the run finishes: check WNS >= 0 and WHS >= 0 in the routed timing summary,"
     say "then copy ${bd}_wrapper.bit + ${bd}.hwh to the board under one common name."
 } else {
-    say "Scope added and block design validated (DO_BUILD 0: no build started)."
+    say "ADC capture added and block design validated (DO_BUILD 0: no build started)."
 }
 close $logf
