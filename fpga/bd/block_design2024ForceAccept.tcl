@@ -43,7 +43,8 @@ if { [string first $scripts_vivado_version $current_vivado_version] == -1 } {
 # awg_BRAM_dual, control_or_gate, pmod_test
 
 # Please add the sources of those modules before sourcing this Tcl script.
-add_files [glob C:/Users/Shogun/Documents/GitCloned/AWG-MultiChannel-RFSoC/src/*.{v,sv,vhd}]
+set _src_dir [file normalize [file join [file dirname [info script]] .. src]]
+add_files [glob [file join $_src_dir *.{v,sv,vhd}]]
 update_compile_order -fileset sources_1
 
 # If there is no project opened, this script will create a

@@ -13,9 +13,9 @@
 #   1. Back up the vivado_awg folder first.
 #   2. Open a CLEAN block design (designCompiled2024) so it is the active BD.
 #   3. Tcl console:
-#        source C:/Users/Shogun/Documents/GitCloned/AWG-MultiChannel-RFSoC/tcl/add_adc_capture.tcl
+#        source fpga/tcl/add_adc_capture.tcl
 #   4. If it stops with an ERROR before "STEP 3", nothing was built: close the BD WITHOUT saving.
-#      Send me the console output (or the file tcl/add_adc_capture.log written next to this script).
+#      Send me the console output (or fpga/tcl/add_adc_capture.log, written next to this script).
 
 set ADC_SLICE "00"        ;# 00 -> vin0_01, 02 -> vin0_23, 20 -> vin2_01, 22 -> vin2_23
 

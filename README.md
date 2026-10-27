@@ -52,7 +52,7 @@ The relevant I/O pins and ports on the board are
 | DAC 0| DAC A  | Output | AWG output |
 | DAC 2| DAC B  | Output | AWG output |
 
-The design contains AXI GPIOs that can be accessed by software. A sample C code is provided.
+The design contains AXI GPIOs that Python (`python/rfsoc_awg.py`) drives as software-visible registers.
 | Name | Memory Address |  Type | Description |
 | -------- | -------- | -------- | -------- |
 | rst_n | 0x00_A007_0000 | Output |1 bit. Software reset. Active low signal. |
@@ -61,17 +61,26 @@ The design contains AXI GPIOs that can be accessed by software. A sample C code 
 | enable_ch0 | 0x00_A009_0000 | Output | 1 bit. Enables output on DAC A when write_enable is low. |
 | enable_ch2 | 0x00_A00A_0000 | Output | 1 bit. Enables output on DAC B when write_enable is low. |
 | axi_control| 0x00_A008_0000 | Output | 1 bit. Software trigger signal.  Switches between waveform-A and waveform-B for DAC0 output and between waveform-C and waveform-D for DAC2 output. The effective select signal is (axi_control || control_trigger) |
-| axi_dma_0| 0x00_A006_0000 | Input | AMD's DMA IP for direct memory access and fast transfer of data from PS to PL.|
+| axi_dma_0| 0x00_A004_0000 | Input | AMD's DMA IP for direct memory access and fast transfer of data from PS to PL.|
 
+
+## Repository layout
+- `fpga/` — RTL (`src/`), constraints, block-design Tcl, the `packet_generator` IP, and `awg_multichannel_rfsoc.tcl`.
+- `fpga/bitstreams/` — `awg_adc.bit` with its `.hwh`, and `awg_clock_syncd.7z` with its `.hwh`. Extract the archive to get `awg_clock_syncd.bit`.
+- `python/` — current dashboard (`rfsoc_dashboard.py`, `AWG_dashboard.ipynb`) and the modules it imports (`rfsoc_awg.py`, `adc_scope.py`, `bode_sweep.py`, `bode.ipynb`), plus the LMK and LMX register files. `xrfclk.set_ref_clks` looks for those register files in the working directory.
+- `python/dac_adc/` — earlier DAC+ADC scripts, including their own `rfsoc_awg.py`. `AWG_notebook.ipynb` in that folder loads `awg_adc.bit`.
+- `python/awg_only/` — original AWG-only scripts. `AWG_notebook.ipynb` in that folder loads `awg_clock_syncd.bit`.
+- `assets/` — architecture diagrams.
+
+`fpga/bd/block_design.tcl` is the block design the build script sources (Vivado 2022.2, `zynq_ultra_ps_e:3.4`). `block_design2024ForceAccept.tcl` is a Vivado 2024.1 re-export and is not sourced by the build. `design_1.tcl` is an older, smaller export and is not sourced either. The build adds `fpga/constrs/constrs.xdc`. `awg_top.xdc` and `adc_capture.xdc` are separate; add `adc_capture.xdc` after running `fpga/tcl/add_adc_capture.tcl`. That script needs `fpga/ip/packet_generator_1.0`.
 
 ## Usage
-A sample jupyter notebook file is provided. 
-1. Copy the .ipynb, the LMK and the LMX files, the .hwh file into the same folder in the device.
-2. Extract the .7z file to obtain the .bit file at the same location.
-3. Run the notebook from within the Linux OS on the FPGA.
+1. On the board, put in one folder: the notebook you want from `python/`, `python/dac_adc/`, or `python/awg_only/`; `python/LMK04828_245.76.txt` and `python/LMX2594_491.52.txt`; and the matching `.bit` and `.hwh` from `fpga/bitstreams/`. For the original design, extract `awg_clock_syncd.7z` to obtain the `.bit`.
+2. For the dashboard, copy `rfsoc_dashboard.py` and `rfsoc_awg.py` into that same folder. Packages beyond the PYNQ image are listed in `requirements.txt`.
+3. Run the notebook from the Linux OS on the FPGA.
 
 
 ## Modifications
-The project can be built as a Vivado project using the <i>awg_multichannel_rfsoc.tcl</i> and necessary modifications can be made. 
+The project can be built as a Vivado project using `fpga/awg_multichannel_rfsoc.tcl`.
 The board file can be installed from
 https://github.com/RealDigitalOrg/RFSoC4x2-BSP

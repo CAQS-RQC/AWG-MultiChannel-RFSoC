@@ -1,0 +1,33 @@
+# Vivado writes these when you build. They are recreated by
+# fpga/awg_multichannel_rfsoc.tcl, so they do not belong in git.
+#
+# Still tracked on purpose: fpga/src, fpga/constrs, fpga/bd, fpga/ip,
+# fpga/tcl, and fpga/bitstreams (the .bit, .hwh, and .7z a board run needs).
+
+fpga/awg_multichannel_rfsoc/
+
+# Project file, logs, and checkpoints
+*.xpr
+*.jou
+*.log
+*.str
+*.debug
+*.ltx
+*.wdb
+*.wcfg
+*.dcp
+
+# Generated directories, wherever the project is created
+*.cache/
+*.gen/
+*.hw/
+*.ip_user_files/
+*.runs/
+*.sim/
+*.srcs/
+.Xil/
+
+# Python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/

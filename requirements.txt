@@ -1,0 +1,6 @@
+# Extra packages for the dashboard (python/rfsoc_dashboard.py).
+# numpy, pynq, and xrfclk come with the RFSoC PYNQ board image.
+ipywidgets
+plotly
+anywidget
+voila

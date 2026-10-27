@@ -18,8 +18,8 @@ GPIO registers) behind a small API so you only think about *pulses*:
     ... edit waveforms ...;   awg.play()            # re-upload: takes effect immediately
     awg.select_slot("x")                            # switch slot instantly, no upload
 
-Hardware model (bitstreams `awg_clock_syncd.bit` / `awg_adc.bit`, RTL src/awg_BRAM_dual.v)
-------------------------------------------------------------------------------------
+Hardware model (bitstreams `awg_clock_syncd.bit` / `awg_adc.bit`, RTL fpga/src/awg_BRAM_dual.v)
+-----------------------------------------------------------------------------------------------
 * 2 outputs:  "DAC_B" (hardware channel 0) and "DAC_A" (hardware channel 2).
 * The DAC runs at 9.8304 GS/s  ->  1 sample = 101.7 ps.
 * The fabric hands the DAC 16 samples per clock cycle (614.4 MHz -> 1.6276 ns).
@@ -448,7 +448,7 @@ class AWG:
 
     # ---- hardware ---------------------------------------------------------- #
     #
-    # What the registers really do (from src/awg_BRAM_dual.v + bd/block_design.tcl):
+    # What the registers really do (from fpga/src/awg_BRAM_dual.v + fpga/bd/block_design.tcl):
     #   rst_n        -> proc_sys_reset_2 -> awg_BRAM_dual.rst_n. Resets ONLY the RAM
     #                   *write pointer*. It must be pulsed before EVERY upload: after one
     #                   full upload the pointer parks on the last RAM word, so a second
