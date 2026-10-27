@@ -93,8 +93,8 @@ class DemoScope:
 
     MODES = ["awg2", "awg0", "immediate", "rising", "falling", "ctrl_rise", "ctrl_fall", "manual"]
 
-    def __init__(self, awg, fs: float = 2.4576e9, noise: float = 2e-3):
-        self.awg, self.fs, self.noise = awg, fs, noise
+    def __init__(self, awg, fs: float = 2.4576e9, noise: float = 2e-3, latency_ns: float = 35.0):
+        self.awg, self.fs, self.noise, self.latency_ns = awg, fs, noise, latency_ns
         self.cfg = dict(trigger="awg2", level=0.0, pre_ns=10, length_ns=1000)
         self.last = {}
 
@@ -109,7 +109,7 @@ class DemoScope:
         if self.awg.state not in ("playing", "stale") or not self.awg._running:
             v = np.zeros(self.awg.n_samples)                  # outputs off -> nothing to see
         period = self.awg.max_points * 16                     # samples per loop
-        idx = np.round(t_ns * 1e-9 * DAC_SR).astype(int) % period
+        idx = np.round((t_ns - self.latency_ns) * 1e-9 * DAC_SR).astype(int) % period   # DAC->ADC delay
         y = np.where(idx < len(v), v[np.clip(idx, 0, len(v) - 1)], 0.0) + self.noise * np.random.randn(n)
         time.sleep(0.05)
         self.last = {"triggered": True, **c}
@@ -240,6 +240,14 @@ class AWGDashboard:
         self.overlay = w.Dropdown(options=["none"] + slots, value="none", description="Overlay planned",
                                   style={"description_width": "105px"})
         self.overlay.observe(lambda _: self._update_overlay(), names="value")
+        self.offset = w.BoundedFloatText(value=0.0, min=-1e5, max=1e5, step=0.1, description="Delay [ns]",
+                                         layout=w.Layout(width="160px"), style={"description_width": "70px"})
+        self.offset.observe(lambda _: self._update_overlay(), names="value")
+        self.btn_align = w.Button(description="Auto-align", icon="arrows-h",
+                                  tooltip="Find the DAC->ADC delay by cross-correlating the last capture "
+                                          "with the planned waveform")
+        self.btn_align.on_click(lambda _: self._auto_align())
+        self._last_capture = None               # (t_us, y) of the last ADC capture
         self.run.observe(self._on_run, names="value")
         self.autoplay = w.Checkbox(value=True, indent=False,
                                    description="Auto-play the AWG when the scope starts")
@@ -288,7 +296,7 @@ class AWGDashboard:
         scope_bar = [w.HBox([self.source, self.run, self.rate]), self.autoplay]
         if self.scope is not None:
             scope_bar += [w.HBox([self.trig, self.level, self.pre_ns, self.len_ns, self.timeout]),
-                          self.overlay]
+                          w.HBox([self.overlay, self.offset, self.btn_align])]
         self.ui = w.VBox([
             w.HTML("<h2>RFSoC 4x2 AWG &amp; scope</h2>"),
             self.tabs, hw, self.status, self.range,
@@ -417,7 +425,8 @@ class AWGDashboard:
 
     def _update_overlay(self):
         """Planned DAC waveform (orange, right axis) on top of the ADC trace.
-        Time 0 = start of the AWG slot, which is where a trigger='awg2' capture is aligned."""
+        The slot loops forever, so it is repeated over the whole capture.  It is shifted by
+        the 'Delay' (DAC pipeline + converters + cable); use Auto-align to measure it."""
         tr = self.fig_scope.data[2]
         if self.source.value != "ADC capture" or self.overlay.value == "none":
             tr.x, tr.y = [], []
@@ -426,8 +435,48 @@ class AWGDashboard:
         v = self._slot_volts(ch, name)
         if v is None:
             tr.x, tr.y = [], []
-        else:
-            tr.x, tr.y = _decimate(self.awg.t / us, v)
+            return
+        win_us = self.awg.window / us
+        t_end = self._last_capture[0][-1] if self._last_capture else win_us
+        t_beg = self._last_capture[0][0] if self._last_capture else 0.0
+        delay_us = self.offset.value / 1e3
+        k0 = int(np.floor((t_beg - delay_us) / win_us))
+        k1 = int(np.ceil((t_end - delay_us) / win_us))
+        k0, k1 = max(k0, -50), min(max(k1, k0 + 1), k0 + 60)          # keep it light
+        t_one = self.awg.t / us
+        xs = np.concatenate([t_one + k * win_us + delay_us for k in range(k0, k1)])
+        ys = np.tile(v, k1 - k0)
+        keep = (xs >= t_beg) & (xs <= t_end)
+        tr.x, tr.y = _decimate(xs[keep], ys[keep]) if keep.any() else ([], [])
+
+    def _auto_align(self):
+        """Estimate the DAC->ADC delay: slide the (periodic) planned waveform over the last
+        capture and keep the shift with the best normalised correlation."""
+        if self._last_capture is None or self.overlay.value == "none":
+            self._set_status(["Auto-align: capture first (Run scope on 'ADC capture') and pick "
+                              "a slot in 'Overlay planned'."])
+            return
+        ch, name = self.overlay.value.split()
+        v = self._slot_volts(ch, name)
+        t_ns, y = self._last_capture[0] * 1e3, self._last_capture[1]
+        if v is None or np.ptp(y) == 0 or not np.any(v):
+            self._set_status(["Auto-align: nothing to correlate (flat capture or empty slot)."])
+            return
+        win_ns, tv = self.awg.window / ns, self.awg.t / ns
+        y0 = y - y.mean()
+        best = (-2.0, 0.0)
+        for d in np.arange(-50.0, min(400.0, win_ns), 0.1):          # candidate delays [ns]
+            p = np.interp((t_ns - d) % win_ns, tv, v)
+            p = p - p.mean()
+            den = np.linalg.norm(p) * np.linalg.norm(y0)
+            if den > 0:
+                c = float(p @ y0 / den)
+                if c > best[0]:
+                    best = (c, float(d))
+        self.offset.value = round(best[1], 1)
+        self._set_status([] if best[0] > 0.5 else
+                         [f"Auto-align: weak match (correlation {best[0]:.2f}); check the loopback."],
+                         ok=f"delay DAC→ADC = {best[1]:.1f} ns (correlation {best[0]:.2f})")
 
     def _scope_preview_data(self):
         """Computed scope data for the selected slot -> (t_us, volts, fs, title)."""
@@ -495,6 +544,7 @@ class AWGDashboard:
         self.fig_scope.update_layout(title=f"Scope – ADC ({len(y)} samples @ {fs/1e9:.4f} GS/s"
                                            f"{', ' + note if note else ''})")
         self._show_scope(t_us, y, fs, unit)
+        self._last_capture = (t_us, y)
         self._update_overlay()
 
     def _scope_loop(self):
