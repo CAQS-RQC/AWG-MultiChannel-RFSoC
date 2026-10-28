@@ -111,7 +111,7 @@ The ADC clock domain (307.2 MHz in `iq` mode, 614.4 MHz in `full` mode) and the 
 
 ## Repository layout
 - `fpga/` — RTL (`src/` AWG, `adc/` ADC capture), constraints, block-design Tcl, `awg_multichannel_rfsoc.tcl` (the single build script), `bitstreams/`, and `legacy/` (unused older attempts).
-- `fpga/bitstreams/` — `awg_adc.bit` with its `.hwh`, and `awg_clock_syncd.7z` with its `.hwh`. Extract the archive to get `awg_clock_syncd.bit`.
+- `fpga/bitstreams/` — ready-to-use `.bit` and `.hwh` pairs, see [Bitstreams](#bitstreams).
 - `python/` — current dashboard (`rfsoc_dashboard.py`, `AWG_dashboard.ipynb`) and the modules it imports (`rfsoc_awg.py`, `adc_scope.py`, `bode_sweep.py`, `bode.ipynb`), plus the LMK and LMX register files. `xrfclk.set_ref_clks` looks for those register files in the working directory.
 - `python/dac_adc/` — earlier DAC+ADC scripts, including their own `rfsoc_awg.py`. `AWG_notebook.ipynb` in that folder loads `awg_adc.bit`.
 - `python/awg_only/` — original AWG-only scripts. `AWG_notebook.ipynb` in that folder loads `awg_clock_syncd.bit`.
@@ -119,21 +119,61 @@ The ADC clock domain (307.2 MHz in `iq` mode, 614.4 MHz in `full` mode) and the 
 
 `fpga/awg_multichannel_rfsoc.tcl` is the single build script (see Modifications). It sources `fpga/bd/block_design.tcl` (Vivado 2024.1 export of the AWG block design), optionally adds the ADC capture path with `fpga/tcl/add_adc.tcl` (RTL in `fpga/adc/hdl/adc_core.v`), and uses `fpga/constrs/awg_top.xdc`. `fpga/legacy/` holds the earlier DMA-based ADC capture attempt (`add_adc_capture.tcl`, `adc_capture.xdc`, `packet_generator_1.0`), older block-design exports and the original constraints. Nothing in it is used by the build.
 
+## Bitstreams
+A `.bit` always goes with the `.hwh` of the same name. Copy both to the board next to the notebook that loads them.
+
+| Files in `fpga/bitstreams/` | Design | Use with |
+| -------- | -------- | -------- |
+| `awg_clock_syncd.bit` (inside `awg_clock_syncd.7z`) + `.hwh` | AWG only, 2 DAC channels | `python/awg_only/` |
+| `awg_adc.bit` + `.hwh` | AWG + ADC capture, first version (`iq` mode, 2.4576 GSps, scope cell named `adc_scope`) | `python/dac_adc/`, the dashboard and `python/adc_scope.py` in `python/` |
+| `awg_adc_v3.bit` + `.hwh` | AWG + ADC capture, current core (`adc_core`, ID `0xADC50003`, `iq` mode), produced by the build script | Software for the current core is not in the repo yet. |
+| `awg_adc_full_v3.bit` + `.hwh` | Same, `full` mode (4.9152 GSps, 614.4 MHz capture clock) | Same as above. |
+
+The two `_v3` pairs only appear after you run the build script (see [Building the FPGA design](#building-the-fpga-design)). `awg_adc.bit` and the `_v3` bitstreams are not interchangeable: the ADC cells have different names and a different register layout, so the software must match the bitstream. In the `_v3` designs the ADC cells are named `adc` and `axi_bram_ctrl_adc`.
+
 ## Usage
 1. On the board, put in one folder: the notebook you want from `python/`, `python/dac_adc/`, or `python/awg_only/`; `python/LMK04828_245.76.txt` and `python/LMX2594_491.52.txt`; and the matching `.bit` and `.hwh` from `fpga/bitstreams/`. For the original design, extract `awg_clock_syncd.7z` to obtain the `.bit`.
 2. For the dashboard, copy `rfsoc_dashboard.py` and `rfsoc_awg.py` into that same folder. Packages beyond the PYNQ image are listed in `requirements.txt`.
 3. Run the notebook from the Linux OS on the FPGA.
 
 
-## Modifications
-Requires Vivado 2024.1. One script builds everything (project, block design, ADC capture, bitstream, ~50 min) and copies `awg_adc_v3.bit/.hwh` into `fpga/bitstreams/`:
+## Building the FPGA design
+You only need this to change the FPGA design. To just run it, use a bitstream from [Bitstreams](#bitstreams).
 
-```
-# Vivado Tcl console
-source <repo>/fpga/awg_multichannel_rfsoc.tcl
-# or batch
-vivado -mode batch -source fpga/awg_multichannel_rfsoc.tcl -tclargs [--no-adc] [--adc-mode iq|full] [--no-build] [--jobs N] [--proj-dir DIR]
-```
-`--no-adc` builds the AWG only, `--adc-mode` picks the ADC setup (see ADC capture), `--no-build` stops after the block design and wrapper are made, `--proj-dir` puts the Vivado project in another (shorter) folder if Windows paths get too long. In the console, set `AWG_ADC`, `AWG_ADC_MODE`, `AWG_BUILD`, `AWG_JOBS` or `AWG_PROJ_DIR` before sourcing instead.
-The board file can be installed from
-https://github.com/RealDigitalOrg/RFSoC4x2-BSP
+**Needs:** Vivado **2024.1** with a license that covers the `xczu48dr` device, a clone of this repository, and about 50 minutes for a full build. Other Vivado versions are refused by the script, because the block design is a 2024.1 export.
+
+**First time** (Vivado Tcl console; use forward slashes in paths):
+1. Check that everything assembles without building (a few minutes):
+   ```
+   set AWG_BUILD 0
+   source C:/path/to/AWG-MultiChannel-RFSoC/fpga/awg_multichannel_rfsoc.tcl
+   ```
+   It is fine when the console shows `Block design validated and saved.` and `--no-build: stopping here`.
+2. Run the full build (synthesis, implementation, bitstream):
+   ```
+   unset AWG_BUILD
+   source C:/path/to/AWG-MultiChannel-RFSoC/fpga/awg_multichannel_rfsoc.tcl
+   ```
+3. The build is good when the console ends with `DONE. Copied ... to fpga/bitstreams` and the printed `WNS` and `WHS` are zero or positive. A warning that timing is not met means do not use that bitstream.
+
+**Batch mode** does the same: `vivado -mode batch -source fpga/awg_multichannel_rfsoc.tcl -tclargs [options]`.
+
+| Option (command line) | Variable in the console | Effect |
+| -------- | -------- | -------- |
+| `--no-adc` | `AWG_ADC 0` | AWG only, no ADC capture. Output: `awg_only_new.bit/.hwh`. |
+| `--adc-mode iq\|full` | `AWG_ADC_MODE` | ADC setup, default `iq`, see [ADC capture](#adc-capture). `full` gives `awg_adc_full_v3.bit/.hwh`. |
+| `--no-build` | `AWG_BUILD 0` | Stop after the block design and wrapper are made. |
+| `--jobs N` | `AWG_JOBS N` | Parallel jobs, default 4. |
+| `--proj-dir DIR` | `AWG_PROJ_DIR` | Put the Vivado project in another folder. |
+
+The script always recreates the Vivado project in `fpga/awg_multichannel_rfsoc/` from scratch, so that folder is disposable build output and git ignores it. Results go to `fpga/bitstreams/`.
+
+**If something fails:**
+- *Vivado version error*: use 2024.1.
+- *`Missing file: ...`*: the checkout is incomplete or files were renamed. Pull again, or restore the file.
+- *Build errors after pulling changes that moved or renamed files*: close the project, delete `fpga/awg_multichannel_rfsoc/` and run the script again. An old project keeps pointing at files that no longer exist.
+- *The block design is not created, or `cell ... missing`*: look for the first `ERROR` line above it in the Tcl console. It is usually an IP version problem.
+- *`path too long` errors on Windows*: use a short project folder, for example `set AWG_PROJ_DIR C:/awg_build`. The script warns when the project path is over 100 characters.
+- *The RF data converter rejects the ADC settings*: the message names the setting and the values it accepts.
+
+The script sets the FPGA part (`xczu48dr-ffvg1517-2-e`) directly and does not select a board. The RealDigital board files are only needed if you want to create a project from the board preset in the GUI: https://github.com/RealDigitalOrg/RFSoC4x2-BSP
