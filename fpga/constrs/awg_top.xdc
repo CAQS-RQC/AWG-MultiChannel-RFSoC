@@ -11,5 +11,6 @@ set_property IOSTANDARD LVCMOS18 [get_ports pmod_out_0]
 set_property PACKAGE_PIN AF16    [get_ports pmod_out_0]
 
 # PS clock and DAC clocks are asynchronous
-set_clock_groups -asynchronous -group [get_clocks clk_pl_0] -group [get_clocks RFDAC0_CLK]
+# -include_generated_clocks: also covers the ADC capture clocks made from the DAC0 clock by clk_wiz_adc (--adc-mode full)
+set_clock_groups -asynchronous -group [get_clocks clk_pl_0] -group [get_clocks -include_generated_clocks RFDAC0_CLK]
 set_clock_groups -asynchronous -group [get_clocks clk_pl_0] -group [get_clocks RFDAC2_CLK]

@@ -16,7 +16,7 @@ High-sampling-rate, high-memory-density, multi-channel arbitrary waveform genera
   - DAC B (DAC2): waveform C or D
   - Waveform selection via software (AXI GPIO) or an external signal.
 - Sample loading within 5-7 ms.
-- One ADC input (ADC D) captured at 2.4576 GSps (or 4.9152 GSps in `full` mode) into a 131072-sample buffer, with pre-trigger and triggers from the ADC level, the AWG sequence start or the external trigger. See [ADC capture](#adc-capture).
+- One ADC input (ADC D) captured raw at the full 4.9152 GSps, with the ADC clock locked to the AWG, pre-trigger, and triggers from the ADC level, the AWG sequence start or the external trigger. See [ADC capture](#adc-capture).
 
 
 ## System Architecture
@@ -65,29 +65,27 @@ The design contains AXI GPIOs that Python (`python/rfsoc_awg.py`) drives as soft
 | axi_control| 0x00_A008_0000 | Output | 1 bit. Software trigger signal.  Switches between waveform-A and waveform-B for DAC0 output and between waveform-C and waveform-D for DAC2 output. The effective select signal is (axi_control || control_trigger) |
 | axi_dma_0| 0x00_A004_0000 | Input | AMD's DMA IP for direct memory access and fast transfer of data from PS to PL.|
 | adc (registers) | 0x00_A00B_0000 | In/Out | ADC capture engine control and status, 4 KB. See [ADC capture](#adc-capture). |
-| axi_bram_ctrl_adc | 0x00_A00C_0000 | Input | ADC capture memory, 256 KB, read-only for software. |
+| axi_bram_ctrl_adc | assigned by Vivado | Input | ADC capture memory, 512 KB, read-only for software. Vivado picks a 512 KB-aligned address; the driver takes it from the `.hwh`. |
 
 
 ## ADC capture
-The ADC path records what comes in on the ADC D input, aligned with the AWG output, so the two can be compared. It is a triggered scope: the PL writes every ADC sample into on-chip RAM, and the PS reads the window around the trigger afterwards. It is built by `fpga/tcl/add_adc.tcl` (called by the build script) from `fpga/adc/hdl/adc_core.v`.
+The ADC path records what comes in on the ADC D input, aligned with the AWG output, so the two can be compared. It is a triggered scope: the PL writes every ADC sample into on-chip RAM, and the PS reads the window around the trigger afterwards. It is built by `fpga/tcl/add_adc.tcl` (called by the build script) from `fpga/adc/hdl/adc_capture.v`.
 
 | Property | Value |
 | -------- | -------- |
-| Converter | RFDC ADC slice 00 (`vin0_01`), sampling at 4.9152 GSps, 16-bit signed samples, 8 samples per clock (128-bit stream). Two setups, chosen at build time with `--adc-mode`, see below. |
-| Reference clock | 491.52 MHz on `adc0_clk_1` |
-| Memory | Ring buffer of 16384 beats x 128 bit = 131072 samples (53.3 µs in `iq` mode, 26.7 µs in `full` mode), in a dual-port BRAM. The ADC side never waits for the PS, so no sample is lost. |
-| Trigger window | PRE beats before the trigger and POST beats from the trigger on (PRE + POST at most 16384 beats). One beat is 8 samples: 3.26 ns in `iq` mode, 1.63 ns in `full` mode. |
-| Level trigger | Sample accurate. `TSUB` gives which of the 8 samples in the trigger beat crossed the level. |
+| Converter | RFDC ADC slice 00 (`vin0_01`), 4.9152 GSps from the 491.52 MHz reference on `adc0_clk_1`, real output, no decimation: raw samples, 203 ps apart, bandwidth up to 2.4576 GHz. 16-bit signed samples. |
+| Stream | 12 samples per beat (192 bit, the widest the RFDC allows), sample 0 (the earliest) in bits [15:0]. |
+| ADC stream clock | 409.6 MHz from `clk_wiz_adc`, an MMCM fed by the DAC0 614.4 MHz clock. |
+| Memory | Ring buffer of 16384 beats x 256 bit (12 samples + 64 unused bits) = 196608 samples = 40.0 µs, in a dual-port BRAM. The PL never waits for the PS, so no sample is lost. |
+| Trigger window | PRE beats before the trigger beat and POST beats from it on (PRE + POST at most 16384 beats). One beat is 2.44 ns. |
+| Level trigger | Sample accurate. `TSUB` gives which of the 12 samples in the trigger beat crossed the level. |
+| AWG ch0 trigger | Locked: the same ADC sample every time, see below. |
 
-ADC mode (build option `--adc-mode`, or `AWG_ADC_MODE` in the console):
-| Mode | RFDC setup | Sample rate | Sample spacing | Stream clock |
-| -------- | -------- | -------- | -------- | -------- |
-| `iq` (default) | I/Q output, decimation 2, 0 Hz mixer. Only the I stream is captured. | 2.4576 GSps | 407 ps | 307.2 MHz |
-| `full` | Real output, no decimation, no mixer. | 4.9152 GSps | 203 ps | 614.4 MHz |
+**How the ADC stays aligned with the DAC.** The DAC runs at 9.8304 GSps and the ADC at 4.9152 GSps from the same reference, so they never drift apart. The capture logic does not use an RFDC ADC clock: `clk_wiz_adc` makes 409.6 MHz (ADC stream) and 204.8 MHz (frame) from the 614.4 MHz AWG ch0 clock. One frame of 4.883 ns is exactly 3 AWG beats, 2 ADC beats and 24 ADC samples. The AWG sequence-start event goes AWG clock → frame clock → ADC clock through plain registers that Vivado times as synchronous paths, together with its position inside the frame, so the core knows to the sample which ADC sample belongs to the AWG beat where the sequence started. That gives `TADDR`/`TSUB` with no jitter. What is left is a constant delay (DAC and ADC converter latency, cables) that changes only when the RFDC tiles restart. Measure it once per power-up with a loopback cable from DAC A to ADC D: `AdcScope.calibrate_awg0()` does that and then puts t = 0 on the sequence start as seen at the ADC. `awg2` (DAC tile 2) has its own tile clock and stays asynchronous (±1 beat).
 
-`iq` is the setup of the earlier `awg_adc.bit`. The decimation filter of `iq` limits the captured bandwidth to roughly the lower half of the Nyquist band. `full` keeps the whole band and gives twice the time resolution, but the capture engine then runs at 614.4 MHz, so check timing (WNS and WHS, printed at the end of the build) before trusting a `full` bitstream. The `full` bitstream is saved as `awg_adc_full_v3.bit/.hwh`. The register map and the 8-samples-per-beat layout are the same in both modes; only the time per beat and the buffer length in time change.
+The MMCM must lock after the DAC clock runs. `AdcScope(ol)` resets it through the `CLKCTL` register, waits for `STATUS` bit 2 and restarts the ADC tile. Create it after `xrfclk.set_ref_clks()`.
 
-Trigger source (`MODE` register): 0 immediate, 1 level rising, 2 level falling, 3 AWG channel 0 sequence start, 4 AWG channel 2 sequence start, 5 `control_trigger` rising edge, 6 `control_trigger` falling edge, 7 manual only. A `FORCE` write triggers at once, which software uses as an auto-trigger timeout.
+Trigger source (`MODE` register): 0 immediate, 1 level rising, 2 level falling, 3 AWG channel 0 sequence start (locked), 4 AWG channel 2 sequence start, 5 `control_trigger` rising edge, 6 `control_trigger` falling edge, 7 manual only. A `FORCE` write triggers at once, which software uses as an auto-trigger timeout.
 
 Register map, base address 0x00_A00B_0000 (byte offsets):
 | Offset | Name | Access | Description |
@@ -97,27 +95,31 @@ Register map, base address 0x00_A00B_0000 (byte offsets):
 | 0x08 | LEVEL | R/W | Signed threshold in ADC codes (int16), bits [15:0]. |
 | 0x0C | PRE | R/W | Beats stored before the trigger beat. |
 | 0x10 | POST | R/W | Beats stored from the trigger beat on (at least 1). |
-| 0x14 | STATUS | R | bit 0 DONE, bit 1 BUSY (ARM not yet taken by the ADC side), bits [6:4] state. |
+| 0x14 | STATUS | R | bit 0 DONE, bit 1 BUSY (ARM not yet taken by the ADC side), bit 2 ADC clock (MMCM) locked, bits [6:4] state. |
 | 0x18 | TADDR | R | Beat address of the trigger beat in the capture memory. |
-| 0x1C | TSUB | R | Sample index (0 to 7) of the trigger inside its beat, 0 for non-level triggers. |
+| 0x1C | TSUB | R | Sample index (0 to 11) of the trigger inside its beat, for level triggers and AWG ch0. 0 otherwise. |
 | 0x20 | TTIME | R | ADC clock cycles from ARM to the trigger. |
 | 0x24 | DEPTH | R | Buffer depth in beats (16384). |
-| 0x28 | ID | R | `0xADC50003`. Reads something else if the bitstream has no ADC capture, or a different version. |
+| 0x28 | ID | R | `0xADC50004` (`0xADC50003` in the older 2.4576 GSps bitstreams). Reads something else if the bitstream has no ADC capture. |
 | 0x2C | ALIVE | R | Free-running count of ADC beats. If it does not move, the ADC clock is not running. |
+| 0x30 | CFG | R | bits [7:0] samples per beat (12), [15:8] 32-bit words per memory word (8), bit 16 AWG ch0 locked (1). |
+| 0x34 | FS_KHZ | R | Sample rate in kHz (4915200). |
+| 0x38 | CLKCTL | R/W | bit 0 resets the ADC clock MMCM (write 1, then 0). |
 
-To read a capture: write PRE, POST, MODE and LEVEL, write CTRL = 1 (ARM), wait for STATUS bit 0 (DONE), then read the capture memory at 0x00_A00C_0000. Sample 0 of a beat is in bits [15:0]. The valid window starts at beat `TADDR - PRE` and wraps around at DEPTH. `ALIVE` and `ID` are the first things to check on a new bitstream.
+To read a capture: write PRE, POST, MODE and LEVEL, write CTRL = 1 (ARM), wait for STATUS bit 0 (DONE), then read the capture memory. A beat is one 32-byte memory word, samples in the lower 24 bytes. The valid window starts at beat `TADDR - PRE` and wraps around at DEPTH. `python/adc_scope.py` does all of this; it reads CFG, so it also still works with the older 2.4576 GSps bitstreams. `ALIVE` and `ID` are the first things to check on a new bitstream.
 
-The ADC clock domain (307.2 MHz in `iq` mode, 614.4 MHz in `full` mode) and the AWG domains (614.4 MHz) are asynchronous. The capture engine crosses them with XPM CDC macros, and the AWG trigger toggles come straight from `awg_BRAM_dual`.
+PS registers cross into the ADC clock with XPM CDC macros. The AWG ch2 toggle and `control_trigger` cross the same way (asynchronous); the AWG ch0 toggle uses the frame-locked path described above.
 
 ## Repository layout
 - `fpga/` — RTL (`src/` AWG, `adc/` ADC capture), constraints, block-design Tcl, `awg_multichannel_rfsoc.tcl` (the single build script), `bitstreams/`, and `legacy/` (unused older attempts).
+- `fpga/adc/sim/` — simulation of the ADC core with Icarus Verilog (`run_sim.sh`): triggers, windows and the AWG-locked timing.
 - `fpga/bitstreams/` — ready-to-use `.bit` and `.hwh` pairs, see [Bitstreams](#bitstreams).
 - `python/` — current dashboard (`rfsoc_dashboard.py`, `AWG_dashboard.ipynb`) and the modules it imports (`rfsoc_awg.py`, `adc_scope.py`, `bode_sweep.py`, `bode.ipynb`), plus the LMK and LMX register files. `xrfclk.set_ref_clks` looks for those register files in the working directory.
 - `python/dac_adc/` — earlier DAC+ADC scripts, including their own `rfsoc_awg.py`. `AWG_notebook.ipynb` in that folder loads `awg_adc.bit`.
 - `python/awg_only/` — original AWG-only scripts. `AWG_notebook.ipynb` in that folder loads `awg_clock_syncd.bit`.
 - `assets/` — architecture diagrams.
 
-`fpga/awg_multichannel_rfsoc.tcl` is the single build script (see Modifications). It sources `fpga/bd/block_design.tcl` (Vivado 2024.1 export of the AWG block design), optionally adds the ADC capture path with `fpga/tcl/add_adc.tcl` (RTL in `fpga/adc/hdl/adc_core.v`), and uses `fpga/constrs/awg_top.xdc`. `fpga/legacy/` holds the earlier DMA-based ADC capture attempt (`add_adc_capture.tcl`, `adc_capture.xdc`, `packet_generator_1.0`), older block-design exports and the original constraints. Nothing in it is used by the build.
+`fpga/awg_multichannel_rfsoc.tcl` is the single build script (see Modifications). It sources `fpga/bd/block_design.tcl` (Vivado 2024.1 export of the AWG block design), optionally adds the ADC capture path with `fpga/tcl/add_adc.tcl` (RTL in `fpga/adc/hdl/adc_capture.v`), and uses `fpga/constrs/awg_top.xdc`. `fpga/legacy/` holds the earlier DMA-based ADC capture attempt (`add_adc_capture.tcl`, `adc_capture.xdc`, `packet_generator_1.0`), older block-design exports and the original constraints. Nothing in it is used by the build.
 
 ## Bitstreams
 A `.bit` always goes with the `.hwh` of the same name. Copy both to the board next to the notebook that loads them.
@@ -125,11 +127,10 @@ A `.bit` always goes with the `.hwh` of the same name. Copy both to the board ne
 | Files in `fpga/bitstreams/` | Design | Use with |
 | -------- | -------- | -------- |
 | `awg_clock_syncd.bit` (inside `awg_clock_syncd.7z`) + `.hwh` | AWG only, 2 DAC channels | `python/awg_only/` |
-| `awg_adc.bit` + `.hwh` | AWG + ADC capture, first version (`iq` mode, 2.4576 GSps, scope cell named `adc_scope`) | `python/dac_adc/`, the dashboard and `python/adc_scope.py` in `python/` |
-| `awg_adc_v3.bit` + `.hwh` | AWG + ADC capture, current core (`adc_core`, ID `0xADC50003`, `iq` mode), produced by the build script | Software for the current core is not in the repo yet. |
-| `awg_adc_full_v3.bit` + `.hwh` | Same, `full` mode (4.9152 GSps, 614.4 MHz capture clock) | Same as above. |
+| `awg_adc.bit` + `.hwh` | AWG + ADC capture, first version (2.4576 GSps decimated, scope cell named `adc_scope`) | `python/dac_adc/`, the dashboard and `python/adc_scope.py` in `python/` |
+| `awg_adc_v4.bit` + `.hwh` | AWG + ADC capture, current design (4.9152 GSps raw, locked to AWG ch0), produced by the build script | `python/adc_scope.py` |
 
-The two `_v3` pairs only appear after you run the build script (see [Building the FPGA design](#building-the-fpga-design)). `awg_adc.bit` and the `_v3` bitstreams are not interchangeable: the ADC cells have different names and a different register layout, so the software must match the bitstream. In the `_v3` designs the ADC cells are named `adc` and `axi_bram_ctrl_adc`.
+`awg_adc_v4` only appears after you run the build script (see [Building the FPGA design](#building-the-fpga-design)). Its ADC cells are named `adc` and `axi_bram_ctrl_adc`. `python/adc_scope.py` handles it and the older `awg_adc.bit`; the scripts in `python/dac_adc/` only handle `awg_adc.bit`.
 
 ## Usage
 1. On the board, put in one folder: the notebook you want from `python/`, `python/dac_adc/`, or `python/awg_only/`; `python/LMK04828_245.76.txt` and `python/LMX2594_491.52.txt`; and the matching `.bit` and `.hwh` from `fpga/bitstreams/`. For the original design, extract `awg_clock_syncd.7z` to obtain the `.bit`.
@@ -161,7 +162,6 @@ You only need this to change the FPGA design. To just run it, use a bitstream fr
 | Option (command line) | Variable in the console | Effect |
 | -------- | -------- | -------- |
 | `--no-adc` | `AWG_ADC 0` | AWG only, no ADC capture. Output: `awg_only_new.bit/.hwh`. |
-| `--adc-mode iq\|full` | `AWG_ADC_MODE` | ADC setup, default `iq`, see [ADC capture](#adc-capture). `full` gives `awg_adc_full_v3.bit/.hwh`. |
 | `--no-build` | `AWG_BUILD 0` | Stop after the block design and wrapper are made. |
 | `--jobs N` | `AWG_JOBS N` | Parallel jobs, default 4. |
 | `--proj-dir DIR` | `AWG_PROJ_DIR` | Put the Vivado project in another folder. |
